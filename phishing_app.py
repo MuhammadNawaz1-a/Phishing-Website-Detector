@@ -18,60 +18,59 @@ st.title("🛡️ Phishing Website Detector")
 st.write("Real-time Machine Learning Security Analysis Tool")
 st.markdown("---")
 
-# Function to automatically train model if joblib files are missing
+# Function to handle Model and Scaler setup cleanly
 @st.cache_resource
-def get_model_and_scaler():
-    model_path = "best_phishing_model.joblib"
-    scaler_path = "scaler.joblib"
-    dataset_path = "Phishing_Legitimate_full.csv"
+def train_model_from_df(df):
+    if 'id' in df.columns:
+        df = df.drop('id', axis=1)
+    df = df.drop_duplicates()
 
-    # Option A: If joblib files exist, load them directly
-    if os.path.exists(model_path) and os.path.exists(scaler_path):
-        model = joblib.load(model_path)
-        scaler = joblib.load(scaler_path)
-        return model, scaler, "Loaded pre-trained model successfully!"
+    X = df.drop("CLASS_LABEL", axis=1)
+    y = df["CLASS_LABEL"]
 
-    # Option B: If CSV exists, train automatically on the fly
-    elif os.path.exists(dataset_path):
-        df = pd.read_csv(dataset_path)
-        
-        if 'id' in df.columns:
-            df.drop('id', axis=1, inplace=True)
-        df.drop_duplicates(inplace=True)
+    # Train Test Split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
 
-        X = df.drop("CLASS_LABEL", axis=1)
-        y = df["CLASS_LABEL"]
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
 
-        # Proper Split Execution Sequence
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train_scaled, y_train)
 
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
+    return model, scaler
 
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
-        model.fit(X_train_scaled, y_train)
+model = None
+scaler = None
 
-        # Save for future fast loading
-        joblib.dump(model, model_path)
-        joblib.dump(scaler, scaler_path)
+# Check 1: Check if joblib models exist in working folder
+if os.path.exists("best_phishing_model.joblib") and os.path.exists("scaler.joblib"):
+    model = joblib.load("best_phishing_model.joblib")
+    scaler = joblib.load("scaler.joblib")
+    st.sidebar.success("✅ Pre-trained Joblib Model Loaded!")
 
-        return model, scaler, "Model trained automatically from CSV dataset!"
+# Check 2: Check if CSV exists in local working folder
+elif os.path.exists("Phishing_Legitimate_full.csv"):
+    df = pd.read_csv("Phishing_Legitimate_full.csv")
+    model, scaler = train_model_from_df(df)
+    st.sidebar.success("✅ Trained model from local CSV!")
 
-    else:
-        return None, None, "Dataset CSV ya Joblib files nahi mili!"
-
-# Load Model & Scaler
-model, scaler, status_message = get_model_and_scaler()
-
-if model is None:
-    st.error("❌ **Error:** Folder mein `Phishing_Legitimate_full.csv` file rakhein taakay model train ho sakay.")
-    st.stop()
+# Check 3: If neither exists, give clean File Uploader in Sidebar (Zero Crash)
 else:
-    st.sidebar.success(f"✅ {status_message}")
+    st.sidebar.warning("⚠️ Local files not detected. Upload dataset or model to proceed.")
+    uploaded_file = st.sidebar.file_uploader("Upload `Phishing_Legitimate_full.csv`", type=["csv"])
+    
+    if uploaded_file is not None:
+        df = pd.read_csv(uploaded_file)
+        model, scaler = train_model_from_df(df)
+        st.sidebar.success("✅ Model trained from uploaded CSV!")
 
-# Sidebar Feature Inputs
+if model is None or scaler is None:
+    st.info("👈 **Please upload your `Phishing_Legitimate_full.csv` file in the sidebar to activate the model.**")
+    st.stop()
+
+# Sidebar Inputs for features
 st.sidebar.header("⚙️ Feature Inputs")
 
 num_dots = st.sidebar.number_input("NumDots", min_value=0, max_value=20, value=2)
@@ -84,7 +83,7 @@ path_length = st.sidebar.slider("PathLength", min_value=0, max_value=200, value=
 pct_ext_hyperlinks = st.sidebar.slider("PctExtHyperlinks", min_value=0.0, max_value=1.0, value=0.1)
 pct_ext_resource_urls = st.sidebar.slider("PctExtResourceUrls", min_value=0.0, max_value=1.0, value=0.1)
 
-# Categorical/Binary Form Inputs
+# Categorical Form Inputs
 col1, col2 = st.columns(2)
 
 with col1:
@@ -99,7 +98,7 @@ with col2:
     frequent_domain_mismatch = st.selectbox("Domain Mismatch Detected?", [0, 1])
     num_sensitive_words = st.number_input("NumSensitiveWords", min_value=0, max_value=10, value=0)
 
-# Build Complete Feature Input (48 Features baseline mapping)
+# Full Feature Vector matching the dataset schema
 raw_feature_dict = {
     'NumDots': num_dots,
     'SubdomainLevel': subdomain_level,
@@ -151,12 +150,12 @@ raw_feature_dict = {
     'PctExtNullSelfRedirectHyperlinksRT': 0
 }
 
-# Prediction Section
+# Real-time Prediction
 st.markdown("---")
-if st.button("🚀 Predict Security Status"):
+if st.button("🚀 Analyze URL Security"):
     input_df = pd.DataFrame([raw_feature_dict])
     
-    # Standardize input using fitted Scaler
+    # Scale Features
     scaled_features = scaler.transform(input_df)
     
     # Predict
@@ -165,6 +164,6 @@ if st.button("🚀 Predict Security Status"):
     
     st.subheader("🔍 Prediction Result")
     if prediction == 1:
-        st.error(f"⚠️ **PHISHING DETECTED!** (Confidence: {prediction_proba[1]*100:.2f}%)")
+        st.error(f"⚠️ **PHISHING URL DETECTED!** (Confidence: {prediction_proba[1]*100:.2f}%)")
     else:
         st.success(f"✅ **LEGITIMATE WEBSITE** (Confidence: {prediction_proba[0]*100:.2f}%)")

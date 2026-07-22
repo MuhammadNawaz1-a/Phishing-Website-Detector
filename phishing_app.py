@@ -1,154 +1,35 @@
-# import streamlit as st
-# import pandas as pd
-# import joblib
-# import numpy as np
-
-# # 1. Page Configuration
-# st.set_page_config(page_title="Phishing Web Classifier", layout="wide")
-
-# st.title("🛡️ Phishing Website Detection App")
-# st.write("Enter the website feature values below or upload a CSV file to test for phishing.")
-
-# # 2. Load the trained Decision Tree Model Safely
-# @st.cache_resource
-# def load_model():
-#     # Make sure your model file is in the same directory or provide the correct path
-#     try:
-#         model = joblib.load("phishing_model.pkl") # Replace with your model file name if different
-#         return model
-#     except Exception as e:
-#         st.error(f"Error loading model: {e}")
-#         return None
-
-# model = load_model()
-
-# # List of all 47 features exactly matching the training data order
-# features_list = [
-#     'NumDots', 'SubdomainLevel', 'PathLevel', 'UrlLength', 'NumDash', 'NumDashInHostname', 
-#     'AtSymbol', 'TildeSymbol', 'NumUnderscore', 'NumPercent', 'NumQueryComponents', 
-#     'NumAmpersand', 'NumHash', 'NumNumericChars', 'NoHttps', 'RandomString', 'IpAddress', 
-#     'DomainInSubdomains', 'DomainInPaths', 'HostnameLength', 'PathLength', 'QueryLength', 
-#     'DoubleSlashInPath', 'NumSensitiveWords', 'EmbeddedBrandName', 'PctExtHyperlinks', 
-#     'PctExtResourceUrls', 'ExtFavicon', 'InsecureForms', 'RelativeFormAction', 'ExtFormAction', 
-#     'AbnormalFormAction', 'PctNullSelfRedirectHyperlinks', 'FrequentDomainNameMismatch', 
-#     'FakeLinkInStatusBar', 'RightClickDisabled', 'PopUpWindow', 'SubmitInfoToEmail', 
-#     'IframeOrFrame', 'MissingTitle', 'ImagesOnlyInForm', 'SubdomainLevelRT', 'UrlLengthRT', 
-#     'PctExtResourceUrlsRT', 'AbnormalExtFormActionR', 'ExtMetaScriptLinkRT', 'PctExtNullSelfRedirectHyperlinksRT'
-# ]
-
-# if model is not None:
-    
-#     # Tabs for Single Input and Batch Input via CSV
-#     tab1, tab2 = st.tabs(["📄 Single URL Prediction", "📁 Batch Prediction (CSV Upload)"])
-    
-#     with tab1:
-#         st.subheader("Manual Feature Input")
-#         st.write("Provide values for the key URL and HTML features:")
-        
-#         # Creating a dynamic layout for 47 inputs using columns to keep it clean
-#         input_data = {}
-#         cols = st.columns(4) # 4 columns layout
-        
-#         for i, feature in enumerate(features_list):
-#             with cols[i % 4]:
-#                 # Automatically assigns float input for Pct columns, integer for others
-#                 if 'Pct' in feature:
-#                     input_data[feature] = st.number_input(f"{feature}", min_value=0.0, max_value=1.0, value=0.0, step=0.01)
-#                 else:
-#                     input_data[feature] = st.number_input(f"{feature}", min_value=0, value=0, step=1)
-                    
-#         if st.button("Predict URL Status", type="primary"):
-#             # Convert inputs to DataFrame with explicit feature names to prevent scikit-learn warnings/errors
-#             features_df = pd.DataFrame([input_data], columns=features_list)
-            
-#             prediction = model.predict(features_df)
-            
-#             st.write("---")
-#             if prediction[0] == 1:
-#                 st.success("✅ This Website appears to be **Legitimate**.")
-#             else:
-#                 st.error("🚨 Warning! This Website appears to be a **Phishing Scam**.")
-
-#     with tab2:
-#         st.subheader("Upload CSV File for Bulk Prediction")
-#         st.write("Make sure your CSV contains the required 47 feature columns. (Any extra column like 'id' will be safely ignored).")
-        
-#         uploaded_file = st.file_uploader("Choose a CSV file", type=["csv"])
-        
-#         if uploaded_file is not None:
-#             df = pd.read_csv(uploaded_file)
-            
-#             # Check if all required features exist in uploaded CSV
-#             missing_cols = [col for col in features_list if col not in df.columns]
-            
-#             if missing_cols:
-#                 st.error(f"The uploaded CSV is missing the following required columns: {missing_cols}")
-#             else:
-#                 # Keep only the trained columns and rearrange them in the correct training order
-#                 test_df = df[features_list]
-                
-#                 # Perform batch prediction
-#                 batch_predictions = model.predict(test_df)
-                
-#                 # Append results to the original uploaded dataframe
-#                 df['Prediction_Label'] = batch_predictions
-#                 df['Prediction_Result'] = np.where(df['Prediction_Label'] == 1, 'Legitimate', 'Phishing')
-                
-#                 st.write("### Prediction Preview:")
-#                 st.dataframe(df[['Prediction_Result'] + features_list].head(10))
-                
-#                 # Download button for the results
-#                 output_csv = df.to_csv(index=False).encode('utf-8')
-#                 st.download_button(
-#                     label="📥 Download Predictions CSV",
-#                     data=output_csv,
-#                     file_name="phishing_predictions_output.csv",
-#                     mime="text/csv"
-#                 )
-# else:
-#     st.info("💡 Please ensure that your serialized model file is correctly saved as 'phishing_model.pkl' in the application folder.")
-
-
-
-
-
-
-
-
-
-
-
-import streamlit as st
-import pandas as pd
+import re
 import joblib
 import numpy as np
-import re
+import pandas as pd
 import requests
+import streamlit as st
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 
-# 1. Page Configuration for Production
+# 1. Page Configuration
 st.set_page_config(
     page_title="Phishing Web Classifier", 
     layout="wide", 
     page_icon="🛡️"
 )
 
-st.title("🛡️ Real-Time Phishing Detection & Analysis App")
-st.write("Scan URLs or upload CSV files to classify websites using Machine Learning.")
+st.title("🛡️ Real-Time Phishing Website Detector")
+st.write("Scan URLs, manually input feature vectors, or process batch CSV files using Machine Learning.")
 
-# 2. Load the trained Model Safely
+# 2. Safe Model Loading
 @st.cache_resource
 def load_model():
     try:
         model = joblib.load("phishing_model.pkl") 
         return model
     except Exception as e:
-        st.error(f"Error loading model: {e}")
+        st.error(f"Error loading model file: {e}")
         return None
 
 model = load_model()
 
+# Full list of 47 exact feature names expected by the model
 features_list = [
     'NumDots', 'SubdomainLevel', 'PathLevel', 'UrlLength', 'NumDash', 'NumDashInHostname', 
     'AtSymbol', 'TildeSymbol', 'NumUnderscore', 'NumPercent', 'NumQueryComponents', 
@@ -162,7 +43,7 @@ features_list = [
     'PctExtResourceUrlsRT', 'AbnormalExtFormActionR', 'ExtMetaScriptLinkRT', 'PctExtNullSelfRedirectHyperlinksRT'
 ]
 
-# 3. REAL-TIME URL & HTML FEATURE EXTRACTOR
+# 3. Real-Time Feature Extractor Function
 def extract_real_features(url):
     features = {f: 0 for f in features_list}
     url_clean = url.strip()
@@ -178,7 +59,7 @@ def extract_real_features(url):
     except Exception:
         hostname, path, query = "", "", ""
 
-    # Basic Structural Calculations
+    # Structural feature calculations
     features['NumDots'] = url_clean.count('.')
     features['SubdomainLevel'] = max(0, hostname.count('.') - 1) if hostname else 0
     features['PathLevel'] = path.count('/') if path else 0
@@ -206,26 +87,24 @@ def extract_real_features(url):
     features['QueryLength'] = len(query)
     features['DoubleSlashInPath'] = 1 if '//' in path else 0
     
-    sensitive_words = ['login', 'verify', 'secure', 'update', 'banking', 'account', 'signin', 'fb', 'verification', 'password']
+    sensitive_words = ['login', 'verify', 'secure', 'update', 'banking', 'account', 'signin', 'password']
     features['NumSensitiveWords'] = sum(1 for word in sensitive_words if word in url_clean.lower())
     
-    brands = ['paypal', 'ebay', 'amazon', 'facebook', 'google', 'microsoft', 'netflix', 'apple', 'instagram']
+    brands = ['paypal', 'ebay', 'amazon', 'facebook', 'google', 'microsoft', 'netflix', 'apple']
     features['EmbeddedBrandName'] = 1 if any(brand in hostname for brand in brands) else 0
 
     features['SubdomainLevelRT'] = 1 if features['SubdomainLevel'] <= 1 else (-1 if features['SubdomainLevel'] >= 3 else 0)
     features['UrlLengthRT'] = 1 if len(url_clean) < 54 else (-1 if len(url_clean) > 75 else 0)
 
-    # LIVE FETCH HTML/DOM DATA
+    # DOM/HTML parsing
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        response = requests.get(url_clean, headers=headers, timeout=5)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url_clean, headers=headers, timeout=4)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # HTML Elements Extraction
         features['MissingTitle'] = 0 if (soup.title and soup.title.string) else 1
         features['IframeOrFrame'] = 1 if (soup.find('iframe') or soup.find('frame')) else 0
         
-        # Check Form Actions & Input Fields
         forms = soup.find_all('form')
         if forms:
             for form in forms:
@@ -240,57 +119,43 @@ def extract_real_features(url):
                 if 'mailto:' in action.lower():
                     features['SubmitInfoToEmail'] = 1
                     
-        # Hyperlink domain checks
         links = soup.find_all('a', href=True)
         if links:
             ext_links = [l['href'] for l in links if l['href'].startswith('http') and hostname not in l['href']]
             features['PctExtHyperlinks'] = len(ext_links) / len(links)
             
     except Exception:
-        # Graceful Fallback if site blocks crawling/timeout occurs
         pass
 
     return features
 
-# --- PRODUCTION UI LOGIC ---
+# 4. Interface Application Logic
 if model is not None:
+    tab1, tab2, tab3 = st.tabs(["🔗 Real-Time URL Scan", "✍️ Manual Feature Input", "📁 Batch Prediction (CSV)"])
     
-    tab1, tab2, tab3 = st.tabs([
-        "🔗 Real-Time URL Scan", 
-        "✍️ Manual Feature Input", 
-        "📁 Batch Prediction (CSV)"
-    ])
-    
-    # ---------------- TAB 1: PASTE URL ----------------
+    # --- Tab 1: Real-Time Scan ---
     with tab1:
         st.subheader("Instant URL Analysis")
-        st.write("Paste a link to scan its structural properties and HTML content in real-time.")
+        user_url = st.text_input("Enter Website URL", placeholder="https://example.com", key="scan_url_input")
         
-        user_url = st.text_input("Enter Website Address", placeholder="https://example.com", key="prod_url")
-        
-        if st.button("Analyze Link", type="primary", key="scan_btn"):
+        if st.button("Analyze URL", type="primary", key="scan_btn"):
             if not user_url.strip():
-                st.warning("⚠️ Please provide a URL.")
+                st.warning("Please enter a valid website address.")
             else:
-                with st.spinner("Analyzing web properties..."):
+                with st.spinner("Analyzing web features..."):
                     extracted_data = extract_real_features(user_url)
                     features_df = pd.DataFrame([extracted_data], columns=features_list)
-                    
                     prediction = model.predict(features_df)
                     
                     st.write("---")
-                    # Check mapping (1 = Legitimate, 0 = Phishing)
                     if prediction[0] == 1:
                         st.success("✅ This Website appears to be **Legitimate**.")
                     else:
                         st.error("🚨 Warning! This Website appears to be a **Phishing Scam**.")
-                        
-                with st.expander("📊 View Extracted Features"):
-                    st.json({k: v for k, v in extracted_data.items() if v != 0})
 
-    # ---------------- TAB 2: MANUAL FEATURE INPUT ----------------
+    # --- Tab 2: Manual Feature Input ---
     with tab2:
-        st.subheader("Manual Feature Input")
+        st.subheader("Manual Vector Input")
         input_data = {}
         cols = st.columns(4)
         
@@ -301,7 +166,7 @@ if model is not None:
                 else:
                     input_data[feature] = st.number_input(f"{feature}", min_value=0, value=0, step=1, key=f"m_{feature}")
                     
-        if st.button("Predict via Manual Inputs", key="manual_btn"):
+        if st.button("Predict Manual Vector", key="manual_btn"):
             features_df = pd.DataFrame([input_data], columns=features_list)
             prediction = model.predict(features_df)
             
@@ -311,17 +176,17 @@ if model is not None:
             else:
                 st.error("🚨 Phishing Website")
 
-    # ---------------- TAB 3: BATCH PREDICTION ----------------
+    # --- Tab 3: CSV Batch Predictions ---
     with tab3:
-        st.subheader("Batch CSV Prediction")
-        uploaded_file = st.file_uploader("Upload CSV", type=["csv"], key="csv_uploader")
+        st.subheader("Bulk Batch CSV Upload")
+        uploaded_file = st.file_uploader("Choose CSV File", type=["csv"], key="batch_uploader")
         
         if uploaded_file is not None:
             df = pd.read_csv(uploaded_file)
             missing_cols = [col for col in features_list if col not in df.columns]
             
             if missing_cols:
-                st.error(f"Missing columns in CSV: {missing_cols}")
+                st.error(f"CSV is missing the following required features: {missing_cols}")
             else:
                 test_df = df[features_list]
                 batch_predictions = model.predict(test_df)
@@ -333,11 +198,9 @@ if model is not None:
                 
                 output_csv = df.to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    label="📥 Download Output CSV",
+                    label="📥 Download Results CSV",
                     data=output_csv,
-                    file_name="phishing_results.csv",
+                    file_name="phishing_predictions.csv",
                     mime="text/csv",
-                    key="download_btn"
+                    key="dl_batch"
                 )
-else:
-    st.info("💡 Ensure `phishing_model.pkl` is saved in the working directory.")

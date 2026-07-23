@@ -49,7 +49,7 @@ def extract_real_features(url):
     url_clean = url.strip()
     
     if not url_clean.startswith(('http://', 'https://')):
-        url_clean = 'http://' + url_clean
+        url_clean = 'https://' + url_clean
         
     try:
         parsed_url = urlparse(url_clean)
@@ -61,7 +61,14 @@ def extract_real_features(url):
 
     # Structural feature calculations
     features['NumDots'] = url_clean.count('.')
-    features['SubdomainLevel'] = max(0, hostname.count('.') - 1) if hostname else 0
+    
+    # Subdomain calculation standard
+    if hostname:
+        parts = hostname.split('.')
+        features['SubdomainLevel'] = max(0, len(parts) - 2) if len(parts) > 2 else 0
+    else:
+        features['SubdomainLevel'] = 0
+
     features['PathLevel'] = path.count('/') if path else 0
     features['UrlLength'] = len(url_clean)
     features['NumDash'] = url_clean.count('-')
@@ -70,38 +77,44 @@ def extract_real_features(url):
     features['TildeSymbol'] = 1 if '~' in url_clean else 0
     features['NumUnderscore'] = url_clean.count('_')
     features['NumPercent'] = url_clean.count('%')
-    features['NumQueryComponents'] = len(query.split('&')) if query else 0
+    features['NumQueryComponents'] = len(query.split('&')) if query and query.strip() else 0
     features['NumAmpersand'] = url_clean.count('&')
     features['NumHash'] = url_clean.count('#')
     features['NumNumericChars'] = sum(c.isdigit() for c in url_clean)
     features['NoHttps'] = 1 if url_clean.startswith('http://') else 0
     
-    features['RandomString'] = 1 if re.search(r'[a-zA-Z0-9]{10,}', url_clean) else 0
-    features['IpAddress'] = 1 if re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', hostname) else 0
+    features['RandomString'] = 1 if re.search(r'[a-zA-Z0-9]{12,}', url_clean) else 0
+    features['IpAddress'] = 1 if re.search(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', hostname) else 0
     
-    features['DomainInSubdomains'] = 1 if hostname and hostname.count('.') > 2 else 0
-    features['DomainInPaths'] = 1 if hostname and hostname in path else 0
+    features['DomainInSubdomains'] = 1 if hostname and features['SubdomainLevel'] > 1 else 0
+    features['DomainInPaths'] = 1 if hostname and len(path) > 1 and hostname in path else 0
     features['HostnameLength'] = len(hostname)
     features['PathLength'] = len(path)
     features['QueryLength'] = len(query)
     features['DoubleSlashInPath'] = 1 if '//' in path else 0
     
-    sensitive_words = ['login', 'verify', 'secure', 'update', 'banking', 'account', 'signin', 'password']
+    sensitive_words = ['login', 'verify', 'secure', 'update', 'banking', 'account', 'signin', 'password', 'confirm']
     features['NumSensitiveWords'] = sum(1 for word in sensitive_words if word in url_clean.lower())
     
-    brands = ['paypal', 'ebay', 'amazon', 'facebook', 'google', 'microsoft', 'netflix', 'apple']
-    features['EmbeddedBrandName'] = 1 if any(brand in hostname for brand in brands) else 0
+    brands = ['paypal', 'ebay', 'amazon', 'facebook', 'google', 'microsoft', 'netflix', 'apple', 'steam']
+    
+    # Check if brand is embedded into path or third-level subdomain rather than primary domain
+    features['EmbeddedBrandName'] = 0
+    if hostname:
+        main_domain = ".".join(hostname.split('.')[-2:])
+        if any(b in url_clean.lower() and b not in main_domain for b in brands):
+            features['EmbeddedBrandName'] = 1
 
     features['SubdomainLevelRT'] = 1 if features['SubdomainLevel'] <= 1 else (-1 if features['SubdomainLevel'] >= 3 else 0)
     features['UrlLengthRT'] = 1 if len(url_clean) < 54 else (-1 if len(url_clean) > 75 else 0)
 
     # Live HTML fetching with graceful error handling
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        response = requests.get(url_clean, headers=headers, timeout=4)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(url_clean, headers=headers, timeout=3, allow_redirects=True)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        features['MissingTitle'] = 0 if (soup.title and soup.title.string) else 1
+        features['MissingTitle'] = 0 if (soup.title and soup.title.string and soup.title.string.strip()) else 1
         features['IframeOrFrame'] = 1 if (soup.find('iframe') or soup.find('frame')) else 0
         
         forms = soup.find_all('form')
@@ -124,7 +137,8 @@ def extract_real_features(url):
             features['PctExtHyperlinks'] = round(len(ext_links) / len(links), 4)
             
     except Exception:
-        pass # Gracefully handle connection timeouts/blocks
+        # Fallback values for offline or non-responsive links
+        features['MissingTitle'] = 0
 
     return features
 
@@ -145,23 +159,25 @@ if model is not None:
         user_url = st.text_input("Website URL", placeholder="https://example.com", key="tab1_url")
         
         if st.button("Scan Website", type="primary", key="tab1_btn"):
-            if not user_url.strip():
-                st.warning("Please enter a valid website link.")
+            clean_input = user_url.strip()
+            if not clean_input:
+                st.warning("⚠️ Please enter a valid website link first before scanning.")
             else:
                 with st.spinner("Analyzing web properties..."):
-                    extracted_data = extract_real_features(user_url)
+                    extracted_data = extract_real_features(clean_input)
                     features_df = pd.DataFrame([extracted_data], columns=features_list)
                     
                     prediction = model.predict(features_df)
                     
                     st.write("---")
                     if prediction[0] == 1:
-                        st.success("✅ This Website appears to be **Legitimate**.")
+                        st.success(f"✅ **Legitimate Website**: `{clean_input}` appears to be safe.")
                     else:
-                        st.error("🚨 Warning! This Website appears to be a **Phishing Scam**.")
+                        st.error(f"🚨 **Phishing Warning**: `{clean_input}` shows suspicious characteristics.")
                         
                 with st.expander("📊 View Extracted Vector Features"):
-                    st.json({k: v for k, v in extracted_data.items() if v != 0})
+                    non_zero = {k: v for k, v in extracted_data.items() if v != 0}
+                    st.json(non_zero if non_zero else extracted_data)
 
     # --- TAB 2: Manual Feature Input ---
     with tab2:

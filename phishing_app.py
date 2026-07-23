@@ -1,186 +1,219 @@
 import streamlit as st
-import numpy as np
 import pandas as pd
-import re
-from urllib.parse import urlparse
-from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestClassifier
 import joblib
-import os
+import numpy as np
+import re
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 
 # 1. Page Configuration
 st.set_page_config(
-    page_title="Phishing Website Security Detector",
-    page_icon="🛡️",
-    layout="centered"
+    page_title="Phishing Web Classifier", 
+    layout="wide", 
+    page_icon="🛡️"
 )
 
-# Application Header
-st.title("🛡️ Phishing Website Detector")
-st.write("Paste any URL below to analyze whether it is Safe or Phishing in real-time.")
-st.markdown("---")
+st.title("🛡️ Phishing Website Detection Application")
+st.write("Scan web links, input manual feature values, or process batch CSV files using Machine Learning.")
 
-# 2. Function to Load Model or Build Lightweight Backup instantly
+# 2. Model Loader with Resource Caching
 @st.cache_resource
-def get_model_and_scaler():
-    # Scenario A: Check pre-trained joblib files
-    if os.path.exists("best_phishing_model.joblib") and os.path.exists("scaler.joblib"):
-        model = joblib.load("best_phishing_model.joblib")
-        scaler = joblib.load("scaler.joblib")
-        return model, scaler
+def load_model():
+    try:
+        model = joblib.load("phishing_model.pkl") 
+        return model
+    except Exception as e:
+        st.error(f"Error loading model file 'phishing_model.pkl': {e}")
+        return None
 
-    # Scenario B: Check CSV file
-    elif os.path.exists("Phishing_Legitimate_full.csv"):
-        df = pd.read_csv("Phishing_Legitimate_full.csv")
-        if 'id' in df.columns:
-            df = df.drop('id', axis=1)
-        df = df.drop_duplicates()
+model = load_model()
 
-        X = df.drop("CLASS_LABEL", axis=1)
-        y = df["CLASS_LABEL"]
+# List of all 47 features matching the model training order exactly
+features_list = [
+    'NumDots', 'SubdomainLevel', 'PathLevel', 'UrlLength', 'NumDash', 'NumDashInHostname', 
+    'AtSymbol', 'TildeSymbol', 'NumUnderscore', 'NumPercent', 'NumQueryComponents', 
+    'NumAmpersand', 'NumHash', 'NumNumericChars', 'NoHttps', 'RandomString', 'IpAddress', 
+    'DomainInSubdomains', 'DomainInPaths', 'HostnameLength', 'PathLength', 'QueryLength', 
+    'DoubleSlashInPath', 'NumSensitiveWords', 'EmbeddedBrandName', 'PctExtHyperlinks', 
+    'PctExtResourceUrls', 'ExtFavicon', 'InsecureForms', 'RelativeFormAction', 'ExtFormAction', 
+    'AbnormalFormAction', 'PctNullSelfRedirectHyperlinks', 'FrequentDomainNameMismatch', 
+    'FakeLinkInStatusBar', 'RightClickDisabled', 'PopUpWindow', 'SubmitInfoToEmail', 
+    'IframeOrFrame', 'MissingTitle', 'ImagesOnlyInForm', 'SubdomainLevelRT', 'UrlLengthRT', 
+    'PctExtResourceUrlsRT', 'AbnormalExtFormActionR', 'ExtMetaScriptLinkRT', 'PctExtNullSelfRedirectHyperlinksRT'
+]
 
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
-        model.fit(X_scaled, y)
-        return model, scaler
-
-    # Scenario C: Instant Fallback Model (No Files Required, App NEVER crashes)
-    else:
-        dummy_X = np.random.rand(20, 48)
-        dummy_y = np.random.choice([0, 1], size=20)
+# 3. Real-Time Feature Extraction Function
+def extract_real_features(url):
+    features = {f: 0 for f in features_list}
+    url_clean = url.strip()
+    
+    if not url_clean.startswith(('http://', 'https://')):
+        url_clean = 'http://' + url_clean
         
-        scaler = StandardScaler()
-        dummy_X_scaled = scaler.fit_transform(dummy_X)
+    try:
+        parsed_url = urlparse(url_clean)
+        hostname = parsed_url.hostname if parsed_url.hostname else ""
+        path = parsed_url.path if parsed_url.path else ""
+        query = parsed_url.query if parsed_url.query else ""
+    except Exception:
+        hostname, path, query = "", "", ""
+
+    # Structural feature calculations
+    features['NumDots'] = url_clean.count('.')
+    features['SubdomainLevel'] = max(0, hostname.count('.') - 1) if hostname else 0
+    features['PathLevel'] = path.count('/') if path else 0
+    features['UrlLength'] = len(url_clean)
+    features['NumDash'] = url_clean.count('-')
+    features['NumDashInHostname'] = hostname.count('-') if hostname else 0
+    features['AtSymbol'] = 1 if '@' in url_clean else 0
+    features['TildeSymbol'] = 1 if '~' in url_clean else 0
+    features['NumUnderscore'] = url_clean.count('_')
+    features['NumPercent'] = url_clean.count('%')
+    features['NumQueryComponents'] = len(query.split('&')) if query else 0
+    features['NumAmpersand'] = url_clean.count('&')
+    features['NumHash'] = url_clean.count('#')
+    features['NumNumericChars'] = sum(c.isdigit() for c in url_clean)
+    features['NoHttps'] = 1 if url_clean.startswith('http://') else 0
+    
+    features['RandomString'] = 1 if re.search(r'[a-zA-Z0-9]{10,}', url_clean) else 0
+    features['IpAddress'] = 1 if re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', hostname) else 0
+    
+    features['DomainInSubdomains'] = 1 if hostname and hostname.count('.') > 2 else 0
+    features['DomainInPaths'] = 1 if hostname and hostname in path else 0
+    features['HostnameLength'] = len(hostname)
+    features['PathLength'] = len(path)
+    features['QueryLength'] = len(query)
+    features['DoubleSlashInPath'] = 1 if '//' in path else 0
+    
+    sensitive_words = ['login', 'verify', 'secure', 'update', 'banking', 'account', 'signin', 'password']
+    features['NumSensitiveWords'] = sum(1 for word in sensitive_words if word in url_clean.lower())
+    
+    brands = ['paypal', 'ebay', 'amazon', 'facebook', 'google', 'microsoft', 'netflix', 'apple']
+    features['EmbeddedBrandName'] = 1 if any(brand in hostname for brand in brands) else 0
+
+    features['SubdomainLevelRT'] = 1 if features['SubdomainLevel'] <= 1 else (-1 if features['SubdomainLevel'] >= 3 else 0)
+    features['UrlLengthRT'] = 1 if len(url_clean) < 54 else (-1 if len(url_clean) > 75 else 0)
+
+    # Live HTML fetching with graceful error handling
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        response = requests.get(url_clean, headers=headers, timeout=4)
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        model = RandomForestClassifier(n_estimators=10, random_state=42)
-        model.fit(dummy_X_scaled, dummy_y)
-        return model, scaler
+        features['MissingTitle'] = 0 if (soup.title and soup.title.string) else 1
+        features['IframeOrFrame'] = 1 if (soup.find('iframe') or soup.find('frame')) else 0
+        
+        forms = soup.find_all('form')
+        if forms:
+            for form in forms:
+                action = form.get('action', '')
+                if not action:
+                    features['PctNullSelfRedirectHyperlinks'] += 1
+                elif action.startswith('http') and hostname not in action:
+                    features['ExtFormAction'] = 1
+                elif not action.startswith('http'):
+                    features['RelativeFormAction'] = 1
+                
+                if 'mailto:' in action.lower():
+                    features['SubmitInfoToEmail'] = 1
+                    
+        links = soup.find_all('a', href=True)
+        if links:
+            ext_links = [l['href'] for l in links if l['href'].startswith('http') and hostname not in l['href']]
+            features['PctExtHyperlinks'] = round(len(ext_links) / len(links), 4)
+            
+    except Exception:
+        pass # Gracefully handle connection timeouts/blocks
 
-# Load ML Model System
-model, scaler = get_model_and_scaler()
+    return features
 
-# 3. URL Feature Extraction Engine (Converts URL string -> 48 Features)
-def extract_features_from_url(url):
-    if not url.startswith(('http://', 'https://')):
-        parsed_url = urlparse('http://' + url)
-        has_https = 0
-    else:
-        parsed_url = urlparse(url)
-        has_https = 1 if url.startswith('https://') else 0
-
-    hostname = parsed_url.netloc or parsed_url.path.split('/')[0]
-    path = parsed_url.path
-
-    num_dots = url.count('.')
-    subdomain_level = max(0, len(hostname.split('.')) - 2)
-    path_level = len([p for p in path.split('/') if p])
-    url_length = len(url)
-    num_dash = url.count('-')
-    num_dash_hostname = hostname.count('-')
-    at_symbol = 1 if '@' in url else 0
-    tilde_symbol = 1 if '~' in url else 0
-    num_underscore = url.count('_')
-    num_percent = url.count('%')
-    num_query_comp = len(parsed_url.query.split('&')) if parsed_url.query else 0
-    num_ampersand = url.count('&')
-    num_hash = url.count('#')
-    num_numeric = sum(c.isdigit() for c in url)
-    no_https = 1 if has_https == 0 else 0
-
-    ip_pattern = r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"
-    ip_address = 1 if re.match(ip_pattern, hostname) else 0
-
-    hostname_length = len(hostname)
-    path_length = len(path)
-    query_length = len(parsed_url.query)
-
-    sensitive_words = ['login', 'bank', 'secure', 'update', 'verify', 'account', 'signin', 'wp', 'cmd']
-    num_sensitive_words = sum(1 for word in sensitive_words if word in url.lower())
-
-    features = {
-        'NumDots': num_dots,
-        'SubdomainLevel': subdomain_level,
-        'PathLevel': path_level,
-        'UrlLength': url_length,
-        'NumDash': num_dash,
-        'NumDashInHostname': num_dash_hostname,
-        'AtSymbol': at_symbol,
-        'TildeSymbol': tilde_symbol,
-        'NumUnderscore': num_underscore,
-        'NumPercent': num_percent,
-        'NumQueryComponents': num_query_comp,
-        'NumAmpersand': num_ampersand,
-        'NumHash': num_hash,
-        'NumNumericChars': num_numeric,
-        'NoHttps': no_https,
-        'RandomString': 0,
-        'IpAddress': ip_address,
-        'DomainInSubdomains': 0,
-        'DomainInPaths': 0,
-        'HttpsInHostname': 0,
-        'HostnameLength': hostname_length,
-        'PathLength': path_length,
-        'QueryLength': query_length,
-        'DoubleSlashInPath': 1 if '//' in path else 0,
-        'NumSensitiveWords': num_sensitive_words,
-        'EmbeddedBrandName': 0,
-        'PctExtHyperlinks': 0.0,
-        'PctExtResourceUrls': 0.0,
-        'ExtFavicon': 0,
-        'InsecureForms': 0,
-        'RelativeFormAction': 0,
-        'ExtFormAction': 0,
-        'AbnormalFormAction': 0,
-        'PctNullSelfRedirectHyperlinks': 0.0,
-        'FrequentDomainNameMismatch': 0,
-        'FakeLinkInStatusBar': 0,
-        'RightClickDisabled': 0,
-        'PopUpWindow': 0,
-        'SubmitInfoToEmail': 0,
-        'IframeOrFrame': 0,
-        'MissingTitle': 0,
-        'ImagesOnlyInForm': 0,
-        'SubdomainLevelRT': 0,
-        'UrlLengthRT': 0,
-        'PctExtResourceUrlsRT': 0,
-        'AbnormalExtFormActionR': 0,
-        'ExtMetaScriptLinkRT': 0,
-        'PctExtNullSelfRedirectHyperlinksRT': 0
-    }
-
-    return pd.DataFrame([features])
-
-# 4. MAIN USER INTERFACE (DIRECT URL BOX)
-target_url = st.text_input("🔗 Enter Website URL:", placeholder="Paste URL here (e.g. https://google.com or http://login-verify-paypal.com)")
-
-if st.button("🔍 Check URL Security", type="primary"):
-    if not target_url.strip():
-        st.warning("⚠️ Please paste a valid URL first!")
-    else:
-        try:
-            # Feature extraction
-            input_features_df = extract_features_from_url(target_url)
-
-            # Feature Scaling
-            scaled_features = scaler.transform(input_features_df)
-
-            # Class Prediction
-            prediction = model.predict(scaled_features)[0]
-            prediction_proba = model.predict_proba(scaled_features)[0]
-
-            st.markdown("---")
-            st.subheader("📊 Analysis Result")
-
-            if prediction == 1:
-                st.error(f"🚨 **PHISHING / SPAM URL DETECTED!**")
-                st.write(f"Phishing Risk Probability: **{prediction_proba[1]*100:.2f}%**")
-                st.error("❌ Do not open or submit sensitive details on this website.")
+# 4. User Interface Tabs
+if model is not None:
+    
+    tab1, tab2, tab3 = st.tabs([
+        "🔗 Real-Time Link Scanner", 
+        "✍️ Manual Feature Input", 
+        "📁 Batch Prediction (CSV Upload)"
+    ])
+    
+    # --- TAB 1: Live Scanner ---
+    with tab1:
+        st.subheader("Automated Link Analysis")
+        st.write("Enter any URL below to automatically extract structural and DOM parameters for analysis.")
+        
+        user_url = st.text_input("Website URL", placeholder="https://example.com", key="tab1_url")
+        
+        if st.button("Scan Website", type="primary", key="tab1_btn"):
+            if not user_url.strip():
+                st.warning("Please enter a valid website link.")
             else:
-                st.success(f"✅ **SAFE / LEGITIMATE WEBSITE**")
-                st.write(f"Safety Confidence Score: **{prediction_proba[0]*100:.2f}%**")
-                st.success("✔️ The structural features of this URL look safe.")
+                with st.spinner("Analyzing web properties..."):
+                    extracted_data = extract_real_features(user_url)
+                    features_df = pd.DataFrame([extracted_data], columns=features_list)
+                    
+                    prediction = model.predict(features_df)
+                    
+                    st.write("---")
+                    if prediction[0] == 1:
+                        st.success("✅ This Website appears to be **Legitimate**.")
+                    else:
+                        st.error("🚨 Warning! This Website appears to be a **Phishing Scam**.")
+                        
+                with st.expander("📊 View Extracted Vector Features"):
+                    st.json({k: v for k, v in extracted_data.items() if v != 0})
 
-        except Exception as e:
-            st.error(f"Error processing URL: {str(e)}")
+    # --- TAB 2: Manual Feature Input ---
+    with tab2:
+        st.subheader("Manual Feature Specification")
+        input_data = {}
+        cols = st.columns(4)
+        
+        for i, feature in enumerate(features_list):
+            with cols[i % 4]:
+                if 'Pct' in feature:
+                    input_data[feature] = st.number_input(f"{feature}", min_value=0.0, max_value=1.0, value=0.0, step=0.01, key=f"t2_{feature}")
+                else:
+                    input_data[feature] = st.number_input(f"{feature}", min_value=0, value=0, step=1, key=f"t2_{feature}")
+                    
+        if st.button("Run Manual Prediction", type="primary", key="tab2_btn"):
+            features_df = pd.DataFrame([input_data], columns=features_list)
+            prediction = model.predict(features_df)
+            
+            st.write("---")
+            if prediction[0] == 1:
+                st.success("✅ Prediction Result: **Legitimate**")
+            else:
+                st.error("🚨 Prediction Result: **Phishing**")
+
+    # --- TAB 3: Batch Prediction ---
+    with tab3:
+        st.subheader("Bulk File Processing")
+        uploaded_file = st.file_uploader("Choose CSV Dataset", type=["csv"], key="tab3_csv")
+        
+        if uploaded_file is not None:
+            df = pd.read_csv(uploaded_file)
+            missing_cols = [col for col in features_list if col not in df.columns]
+            
+            if missing_cols:
+                st.error(f"Missing required columns in dataset: {missing_cols}")
+            else:
+                test_df = df[features_list]
+                batch_predictions = model.predict(test_df)
+                
+                df['Prediction_Label'] = batch_predictions
+                df['Prediction_Result'] = np.where(df['Prediction_Label'] == 1, 'Legitimate', 'Phishing')
+                
+                st.write("### Prediction Preview:")
+                st.dataframe(df[['Prediction_Result'] + features_list].head(10))
+                
+                output_csv = df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Predictions CSV",
+                    data=output_csv,
+                    file_name="phishing_predictions_output.csv",
+                    mime="text/csv",
+                    key="tab3_download"
+                )
+else:
+    st.info("Please make sure `phishing_model.pkl` is located in your project directory.")
